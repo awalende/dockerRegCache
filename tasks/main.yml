@@ -1,0 +1,97 @@
+---
+
+- name: Install Docker.
+  become: yes
+  apt:
+    name: docker.io
+    state: present
+    update_cache: yes
+
+- name: Install virtualenv on master.
+  become: yes
+  when: inventory_hostname in groups.master
+  apt:
+    name: virtualenv
+    state: present
+    update_cache: yes
+
+- name: Install pip on master.
+  become: yes
+  when: inventory_hostname in groups.master
+  apt:
+    name: python-pip
+    state: present
+    update_cache: yes
+
+- name: Install docker-py api on master.
+  become: yes
+  when: inventory_hostname in groups.master
+  pip:
+    name: docker-py
+
+- name: Create data cache directory on master.
+  when: inventory_hostname in groups.master
+  file:
+    path: /home/{{ ansible_env.USER }}{{ main_dir }}
+    state: directory
+
+- name: Copy config proxy file to master.
+  when: inventory_hostname in groups.master
+  copy:
+    src: config.yml
+    dest: /home/{{ ansible_env.USER }}{{ main_dir }}/config.yml
+    mode: 0644
+
+- name: Ensure that an already running docker cache is NOT running.
+  when: inventory_hostname in groups.master
+  become: true
+  docker_container:
+    name: v2-mirror
+    state: absent
+
+- name: Pull registry contrainer from docker hub.
+  when: inventory_hostname in groups.master
+  become: true
+  docker_image:
+    name: registry
+    tag: 2
+
+- name: Start the registry proxy cache on master.
+  when: inventory_hostname in groups.master
+  become: true
+  docker_container:
+    name: v2-mirror
+    image: registry:2
+    command: /var/lib/registry/config.yml
+    volumes:
+      - "/home/{{ ansible_env.USER }}{{ main_dir }}:/var/lib/registry"
+    published_ports:
+      - "5000:5000"
+    restart_policy: always
+
+
+- name: Create systemd dropin for slaves.
+  when: inventory_hostname in groups.slaves
+  become: true
+  file:
+    path: /etc/systemd/system/docker.service.d
+    state: directory
+
+- name: Create systemd conf file for slaves
+  when: inventory_hostname in groups.slaves
+  become: true
+  copy:
+    src: services.conf
+    dest: /etc/systemd/system/docker.service.d/unsecure.conf
+
+
+- name: Add unsecure host entry in systemd dropin.
+  when: inventory_hostname in groups.slaves
+  become: true
+  lineinfile:
+    path: /etc/systemd/system/docker.service.d/unsecure.conf
+    regexp: '^Environment='
+    line: 'Environment="DOCKER_OPTS=--insecure-registry {{ groups.master[0] }}:5000 --registry-mirror=http://{{ groups.master[0] }}:5000"'
+  notify:
+    - restart docker service
+
